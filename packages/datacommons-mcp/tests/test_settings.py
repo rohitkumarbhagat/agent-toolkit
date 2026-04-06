@@ -119,3 +119,36 @@ class TestSettingsValidation:
             pytest.raises(ValueError, match="Input should be 'base' or 'custom'"),
         ):
             get_dc_settings()
+
+    def test_rerank_model_path_is_used_when_provided(self):
+        """Tests that a local reranker path is preferred when configured."""
+        env_vars = {
+            "DC_API_KEY": "test_key",
+            "DC_TYPE": "base",
+            "DC_ENABLE_RERANKING": "true",
+            "DC_RERANK_MODEL_PATH": "/models/mxbai-rerank-base-v1",
+        }
+        with patch.dict(os.environ, env_vars):
+            settings = get_dc_settings()
+            assert settings.get_rerank_source() == (
+                "/models/mxbai-rerank-base-v1",
+                "local path",
+            )
+
+    def test_rerank_model_and_path_are_mutually_exclusive(self):
+        """Tests that only one reranker source may be configured."""
+        env_vars = {
+            "DC_API_KEY": "test_key",
+            "DC_TYPE": "base",
+            "DC_ENABLE_RERANKING": "true",
+            "DC_RERANK_MODEL": "mixedbread-ai/mxbai-rerank-base-v1",
+            "DC_RERANK_MODEL_PATH": "/models/mxbai-rerank-base-v1",
+        }
+        with (
+            patch.dict(os.environ, env_vars),
+            pytest.raises(
+                ValueError,
+                match="Specify only one of DC_RERANK_MODEL or DC_RERANK_MODEL_PATH",
+            ),
+        ):
+            get_dc_settings()

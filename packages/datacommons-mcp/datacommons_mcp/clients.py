@@ -41,6 +41,7 @@ from datacommons_mcp.data_models.settings import (
     CustomDCSettings,
     DCSettings,
 )
+from datacommons_mcp.rerankers import IndicatorReranker, LocalCrossEncoderReranker
 from datacommons_mcp.topics import TopicStore, create_topic_store, read_topic_caches
 from datacommons_mcp.version import __version__
 
@@ -60,6 +61,8 @@ class DCClient:
         dc: DataCommonsClient,
         search_scope: SearchScope = SearchScope.BASE_ONLY,
         topic_store: TopicStore | None = None,
+        reranker: IndicatorReranker | None = None,
+        rerank_candidate_limit: int = 50,
         _place_like_constraints: list[str] | None = None,
     ) -> None:
         """
@@ -76,6 +79,8 @@ class DCClient:
         self.dc = dc
         self.search_scope = search_scope
         self.variable_cache = LruCache(128)
+        self.reranker = reranker
+        self.rerank_candidate_limit = rerank_candidate_limit
 
         if topic_store is None:
             topic_store = TopicStore(topics_by_dcid={}, all_variables=set())
@@ -437,6 +442,19 @@ class DCClient:
             topics = [{"dcid": topic} for topic in topics]
             variables = [{"dcid": var} for var in variables]
 
+        topics = await self._rerank_indicators(
+            query=query,
+            indicators=topics,
+            descriptions=search_results.get("descriptions", {}),
+            alternate_descriptions=search_results.get("alternate_descriptions", {}),
+        )
+        variables = await self._rerank_indicators(
+            query=query,
+            indicators=variables,
+            descriptions=search_results.get("descriptions", {}),
+            alternate_descriptions=search_results.get("alternate_descriptions", {}),
+        )
+
         # Limit results
         topics = topics[:max_results]
         variables = variables[:max_results]
@@ -483,6 +501,88 @@ class DCClient:
             "descriptions": search_results.get("descriptions", {}),
             "alternate_descriptions": search_results.get("alternate_descriptions", {}),
         }
+
+    async def _rerank_indicators(
+        self,
+        query: str,
+        indicators: list[dict],
+        descriptions: dict[str, str | None],
+        alternate_descriptions: dict[str, list[str] | None],
+    ) -> list[dict]:
+        """Rerank a prefix of indicator candidates while preserving fallback order."""
+        if (
+            not self.reranker
+            or not query.strip()
+            or len(indicators) < 2
+            or self.rerank_candidate_limit < 2
+        ):
+            return indicators
+
+        rerank_limit = min(self.rerank_candidate_limit, len(indicators))
+        rerank_candidates = indicators[:rerank_limit]
+        query_document_pairs = [
+            (
+                query,
+                self._build_rerank_text(
+                    indicator["dcid"],
+                    descriptions.get(indicator["dcid"]),
+                    alternate_descriptions.get(indicator["dcid"]),
+                ),
+            )
+            for indicator in rerank_candidates
+        ]
+
+        try:
+            scores = await asyncio.to_thread(self.reranker.predict, query_document_pairs)
+        except Exception:
+            logger.exception("Indicator reranking failed. Falling back to base order.")
+            return indicators
+
+        if len(scores) != len(rerank_candidates):
+            logger.warning(
+                "Indicator reranking returned %s scores for %s candidates. Falling back to base order.",
+                len(scores),
+                len(rerank_candidates),
+            )
+            return indicators
+
+        reranked_candidates = [
+            candidate
+            for _, candidate, _ in sorted(
+                (
+                    (index, candidate, score)
+                    for index, (candidate, score) in enumerate(
+                        zip(rerank_candidates, scores, strict=False)
+                    )
+                ),
+                key=lambda item: (-item[2], item[0]),
+            )
+        ]
+        return reranked_candidates + indicators[rerank_limit:]
+
+    def _build_rerank_text(
+        self,
+        dcid: str,
+        description: str | None,
+        alternate_descriptions: list[str] | None,
+    ) -> str:
+        """Build text for reranking from the best available indicator metadata."""
+        parts = [self.topic_store.get_name(dcid)] if self.topic_store else []
+        parts.extend(alternate_descriptions or [])
+        if description:
+            parts.append(description)
+
+        unique_parts = []
+        seen = set()
+        for part in parts:
+            normalized = part.strip() if part else ""
+            if normalized and normalized not in seen:
+                unique_parts.append(normalized)
+                seen.add(normalized)
+
+        if not unique_parts:
+            return dcid
+        return "\n".join(unique_parts)
 
     async def _search_vector(
         self,
@@ -695,6 +795,23 @@ def _create_base_topic_store(settings: DCSettings) -> TopicStore:
     return topic_store
 
 
+def _create_reranker(settings: DCSettings) -> IndicatorReranker | None:
+    """Create a reranker from settings when enabled."""
+    if not settings.enable_reranking:
+        return None
+
+    rerank_source, rerank_source_kind = settings.get_rerank_source()
+    logger.info(
+        "Loading local reranker from %s: %s",
+        rerank_source_kind,
+        rerank_source,
+    )
+    return LocalCrossEncoderReranker(
+        model_name=rerank_source,
+        batch_size=settings.rerank_batch_size,
+    )
+
+
 def _create_base_dc_client(settings: BaseDCSettings) -> DCClient:
     """Create a base DC client from settings."""
     # Create topic store from path if provided else use default topic cache
@@ -715,6 +832,8 @@ def _create_base_dc_client(settings: BaseDCSettings) -> DCClient:
         dc=dc,
         search_scope=SearchScope.BASE_ONLY,
         topic_store=topic_store,
+        reranker=_create_reranker(settings),
+        rerank_candidate_limit=settings.rerank_candidate_limit,
     )
 
 
@@ -748,6 +867,8 @@ def _create_custom_dc_client(settings: CustomDCSettings) -> DCClient:
         dc=dc,
         search_scope=search_scope,
         topic_store=topic_store,
+        reranker=_create_reranker(settings),
+        rerank_candidate_limit=settings.rerank_candidate_limit,
         # TODO (@jm-rivera): Remove place-like parameter new search endpoint is live.
         _place_like_constraints=settings.place_like_constraints,
     )

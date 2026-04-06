@@ -21,6 +21,7 @@ from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings
 
 from .enums import SearchScope
+from ..rerankers import DEFAULT_RERANK_MODEL
 
 _MODEL_CONFIG = {"env_file": ".env", "extra": "ignore"}
 
@@ -52,6 +53,54 @@ class DCSettings(BaseSettings):
         alias="DC_INSTRUCTIONS_DIR",
         description="Directory containing custom instruction files (markdown overrides)",
     )
+    enable_reranking: bool = Field(
+        default=False,
+        alias="DC_ENABLE_RERANKING",
+        description="Whether to enable local reranking for indicator search",
+    )
+    rerank_model: str | None = Field(
+        default=None,
+        alias="DC_RERANK_MODEL",
+        description="Local reranker model id",
+    )
+    rerank_model_path: str | None = Field(
+        default=None,
+        alias="DC_RERANK_MODEL_PATH",
+        description="Local filesystem path to a reranker model",
+    )
+    rerank_candidate_limit: int = Field(
+        default=50,
+        alias="DC_RERANK_CANDIDATE_LIMIT",
+        description="Maximum number of candidates to rerank",
+    )
+    rerank_batch_size: int = Field(
+        default=16,
+        alias="DC_RERANK_BATCH_SIZE",
+        description="Batch size for reranker inference",
+    )
+
+    @field_validator("rerank_candidate_limit", "rerank_batch_size")
+    @classmethod
+    def validate_positive_integer(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("reranking values must be greater than 0")
+        return value
+
+    @model_validator(mode="after")
+    def validate_rerank_source(self) -> "DCSettings":
+        if self.rerank_model and self.rerank_model_path:
+            raise ValueError(
+                "Specify only one of DC_RERANK_MODEL or DC_RERANK_MODEL_PATH."
+            )
+        return self
+
+    def get_rerank_source(self) -> tuple[str, str]:
+        """Return the effective reranker source and whether it is a path or model id."""
+        if self.rerank_model_path:
+            return self.rerank_model_path, "local path"
+        if self.rerank_model:
+            return self.rerank_model, "model id"
+        return DEFAULT_RERANK_MODEL, "model id"
 
 
 class BaseDCSettings(DCSettings):

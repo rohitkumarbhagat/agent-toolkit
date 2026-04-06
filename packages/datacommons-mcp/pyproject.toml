@@ -27,6 +27,9 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
+rerank = [
+    "sentence-transformers>=3.0.0",
+]
 test = [
     "pytest>=8.3.4",
     "pytest-asyncio>=0.25.3",

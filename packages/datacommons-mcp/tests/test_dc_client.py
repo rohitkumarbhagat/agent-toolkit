@@ -356,6 +356,97 @@ class TestDCClientFetchIndicators:
         assert "places_with_data" in result["variables"][0]
         assert result["variables"][0]["places_with_data"] == ["geoId/06"]
 
+    @pytest.mark.asyncio
+    async def test_fetch_indicators_reranks_variables(
+        self, mocked_datacommons_client: Mock
+    ):
+        """Test that reranking reorders candidates using candidate text."""
+        client_under_test = DCClient(dc=mocked_datacommons_client)
+        client_under_test.rerank_candidate_limit = 10
+
+        mock_search_results = {
+            "jobs": [
+                {
+                    "SV": "dc/variable/UnemploymentRate_Person",
+                    "CosineScore": 0.95,
+                    "description": "share of unemployed people",
+                    "alternate_descriptions": ["unemployment rate"],
+                },
+                {
+                    "SV": "dc/variable/EmploymentRate_Person",
+                    "CosineScore": 0.9,
+                    "description": "share of employed people",
+                    "alternate_descriptions": ["employment rate"],
+                },
+            ]
+        }
+        client_under_test._call_fetch_indicators = Mock(
+            return_value=mock_search_results
+        )
+
+        client_under_test.topic_store = Mock()
+        client_under_test.topic_store.topics_by_dcid = {}
+        client_under_test.topic_store.get_name.side_effect = lambda dcid: {
+            "dc/variable/UnemploymentRate_Person": "Unemployment Rate",
+            "dc/variable/EmploymentRate_Person": "Employment Rate",
+        }.get(dcid, dcid)
+
+        reranker = Mock()
+        reranker.predict.return_value = [0.1, 0.9]
+        client_under_test.reranker = reranker
+
+        result = await client_under_test.fetch_indicators("jobs", include_topics=False)
+
+        assert [var["dcid"] for var in result["variables"]] == [
+            "dc/variable/EmploymentRate_Person",
+            "dc/variable/UnemploymentRate_Person",
+        ]
+        reranker.predict.assert_called_once_with(
+            [
+                (
+                    "jobs",
+                    "Unemployment Rate\nunemployment rate\nshare of unemployed people",
+                ),
+                (
+                    "jobs",
+                    "Employment Rate\nemployment rate\nshare of employed people",
+                ),
+            ]
+        )
+
+    @pytest.mark.asyncio
+    async def test_fetch_indicators_reranking_failure_falls_back(
+        self, mocked_datacommons_client: Mock
+    ):
+        """Test that reranking errors preserve the original candidate order."""
+        client_under_test = DCClient(dc=mocked_datacommons_client)
+        client_under_test.rerank_candidate_limit = 10
+
+        mock_search_results = {
+            "jobs": [
+                {"SV": "dc/variable/UnemploymentRate_Person", "CosineScore": 0.95},
+                {"SV": "dc/variable/EmploymentRate_Person", "CosineScore": 0.9},
+            ]
+        }
+        client_under_test._call_fetch_indicators = Mock(
+            return_value=mock_search_results
+        )
+
+        client_under_test.topic_store = Mock()
+        client_under_test.topic_store.topics_by_dcid = {}
+        client_under_test.topic_store.get_name.side_effect = lambda dcid: dcid
+
+        reranker = Mock()
+        reranker.predict.side_effect = RuntimeError("rerank failed")
+        client_under_test.reranker = reranker
+
+        result = await client_under_test.fetch_indicators("jobs", include_topics=False)
+
+        assert [var["dcid"] for var in result["variables"]] == [
+            "dc/variable/UnemploymentRate_Person",
+            "dc/variable/EmploymentRate_Person",
+        ]
+
     def test_filter_variables_by_existence(self, mocked_datacommons_client):
         """Test variable filtering by existence."""
         # Arrange: Create client for the old path and mock variable cache
@@ -620,6 +711,32 @@ class TestCreateDCClient:
                 api_key="test_api_key",
                 surface_header_value=SURFACE_HEADER_VALUE,
             )
+
+    @patch("datacommons_mcp.clients._create_reranker")
+    @patch("datacommons_mcp.clients.DataCommonsClient")
+    @patch("datacommons_mcp.clients.read_topic_caches")
+    def test_create_dc_client_base_dc_with_reranking(
+        self, mock_read_caches: Mock, mock_dc_client: Mock, mock_create_reranker: Mock
+    ):
+        """Test base DC creation wires reranking config into the client."""
+        env_vars = {
+            "DC_API_KEY": "test_api_key",
+            "DC_TYPE": "base",
+            "DC_ENABLE_RERANKING": "true",
+            "DC_RERANK_CANDIDATE_LIMIT": "25",
+        }
+        with patch.dict(os.environ, env_vars):
+            settings = BaseDCSettings()
+            mock_dc_instance = Mock()
+            mock_dc_client.return_value = mock_dc_instance
+            mock_read_caches.return_value = Mock()
+            mock_reranker = Mock()
+            mock_create_reranker.return_value = mock_reranker
+
+            result = create_dc_client(settings)
+
+            assert result.reranker == mock_reranker
+            assert result.rerank_candidate_limit == 25
 
     @patch("datacommons_mcp.clients.DataCommonsClient")
     @patch("datacommons_mcp.clients.create_topic_store")
