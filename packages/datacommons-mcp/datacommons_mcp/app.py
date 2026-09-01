@@ -36,6 +36,14 @@ logger = logging.getLogger(__name__)
 MCP_SERVER_NAME = "DC MCP Server"
 DEFAULT_INSTRUCTIONS_PACKAGE = "datacommons_mcp.instructions"
 SERVER_INSTRUCTIONS_FILE = "server.md"
+DOCUMENTATION_RESOURCE_NAME = "data_commons_documentation_index"
+DOCUMENTATION_INDEX_URI = "https://docs.datacommons.org/llms.txt"
+DOCUMENTATION_ROUTING_HINT = (
+    "For Data Commons API, client library, schema, dataset coverage, concept, or "
+    f"integration questions, read the MCP resource named `{DOCUMENTATION_RESOURCE_NAME}` "
+    "before searching the web. For statistical data queries, use the MCP tools and "
+    "skills instead."
+)
 
 
 class DCApp:
@@ -68,6 +76,10 @@ class DCApp:
 
         # Load Server Instructions
         server_instructions = self._load_instructions(SERVER_INSTRUCTIONS_FILE)
+        if self.settings.enable_documentation_resource:
+            server_instructions = (
+                f"{server_instructions.rstrip()}\n\n{DOCUMENTATION_ROUTING_HINT}"
+            )
 
         @asynccontextmanager
         async def lifespan(_server: FastMCP) -> AsyncIterator[dict[str, Any]]:
