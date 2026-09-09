@@ -27,6 +27,7 @@ from pydantic import ValidationError
 
 from datacommons_mcp.client import AgentAPIClient
 from datacommons_mcp.data_models.settings import DCSettings
+from datacommons_mcp.middleware import DocumentationMiddleware
 from datacommons_mcp.utils import read_external_content, read_package_content
 from datacommons_mcp.version import __version__
 
@@ -36,14 +37,6 @@ logger = logging.getLogger(__name__)
 MCP_SERVER_NAME = "DC MCP Server"
 DEFAULT_INSTRUCTIONS_PACKAGE = "datacommons_mcp.instructions"
 SERVER_INSTRUCTIONS_FILE = "server.md"
-DOCUMENTATION_RESOURCE_NAME = "data_commons_documentation_index"
-DOCUMENTATION_INDEX_URI = "https://docs.datacommons.org/llms.txt"
-DOCUMENTATION_ROUTING_HINT = (
-    "For Data Commons API, client library, schema, dataset coverage, concept, or "
-    f"integration questions, read the MCP resource named `{DOCUMENTATION_RESOURCE_NAME}` "
-    "before searching the web. For statistical data queries, use the MCP tools and "
-    "skills instead."
-)
 
 
 class DCApp:
@@ -75,11 +68,7 @@ class DCApp:
         )
 
         # Load Server Instructions
-        server_instructions = self._load_instructions(SERVER_INSTRUCTIONS_FILE)
-        if self.settings.enable_documentation_resource:
-            server_instructions = (
-                f"{server_instructions.rstrip()}\n\n{DOCUMENTATION_ROUTING_HINT}"
-            )
+        base_instructions = self._load_instructions(SERVER_INSTRUCTIONS_FILE)
 
         @asynccontextmanager
         async def lifespan(_server: FastMCP) -> AsyncIterator[dict[str, Any]]:
@@ -91,8 +80,14 @@ class DCApp:
         self.mcp = FastMCP(
             MCP_SERVER_NAME,
             version=__version__,
-            instructions=server_instructions,
+            instructions=base_instructions,
             lifespan=lifespan,
+        )
+        self.mcp.add_middleware(
+            DocumentationMiddleware(
+                enabled=self.settings.enable_documentation_resource,
+                base_instructions=base_instructions,
+            )
         )
 
     def _load_instructions(self, filename: str) -> str:

@@ -48,6 +48,30 @@ This transport mode is intended for local integrations and is programmatically c
 uvx datacommons-mcp serve stdio
 ```
 
+### Optional documentation resource
+
+`DC_ENABLE_DOCUMENTATION_RESOURCE` sets the server default (false when unset).
+For stdio, pass this environment variable when launching the server process.
+
+HTTP clients can override the default in their MCP connection configuration:
+
+```json
+"headers": {
+  "X-DC-Enable-Documentation": "true"
+}
+```
+
+Use `"false"` to opt out even when the server default is enabled. Omit the header
+to inherit the server default. Values are case-insensitive and surrounding
+whitespace is ignored; other values produce an invalid-parameters error.
+Send the same preference on every request and reconnect after changing it.
+
+When enabled, a documentation routing hint follows the existing server
+instructions and the documentation index appears in resource listings. The
+server fetches `llms.txt` only when the resource is read. When disabled, the
+index is omitted from listings and direct reads are rejected. Existing tools
+and skills are unaffected.
+
 ## Clients
 
 You can use any MCP-enabled agent or client to connect to your running server. For example, see the [Data Commons MCP documentation](https://github.com/datacommonsorg/agent-toolkit/blob/main/docs/user_guide.md) for guides on connecting:

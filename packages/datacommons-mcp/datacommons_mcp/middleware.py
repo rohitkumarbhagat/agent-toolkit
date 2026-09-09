@@ -1,6 +1,12 @@
 import logging
 from collections.abc import Awaitable, Callable
+from typing import Any
 
+from fastmcp.exceptions import NotFoundError
+from fastmcp.server.dependencies import get_http_headers
+from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
+from mcp import McpError
+from mcp.types import INVALID_PARAMS, ErrorData
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
@@ -8,6 +14,80 @@ from starlette.responses import Response
 from datacommons_mcp.client import use_api_key
 
 logger = logging.getLogger(__name__)
+
+DOCUMENTATION_HEADER = "X-DC-Enable-Documentation"
+DOCUMENTATION_RESOURCE_NAME = "data_commons_documentation_index"
+DOCUMENTATION_INDEX_URI = "https://docs.datacommons.org/llms.txt"
+DOCUMENTATION_ROUTING_HINT = (
+    "For Data Commons API, client library, schema, dataset coverage, concept, or "
+    f"integration questions, read the MCP resource named `{DOCUMENTATION_RESOURCE_NAME}` "
+    "before searching the web. For statistical data queries, use the MCP tools and "
+    "skills instead."
+)
+
+
+class DocumentationMiddleware(Middleware):
+    """Apply the client's documentation preference, falling back to the server."""
+
+    def __init__(self, *, enabled: bool, base_instructions: str) -> None:
+        self._default_enabled = enabled
+        self._base_instructions = base_instructions
+        self._documentation_instructions = (
+            f"{base_instructions.rstrip()}\n\n{DOCUMENTATION_ROUTING_HINT}"
+        )
+
+    def _enabled(self) -> bool:
+        value = get_http_headers().get(DOCUMENTATION_HEADER.lower())
+        if value is None:
+            return self._default_enabled
+        value = value.strip().lower()
+        if value not in ("true", "false"):
+            raise McpError(
+                ErrorData(
+                    code=INVALID_PARAMS,
+                    message=f"{DOCUMENTATION_HEADER} must be true or false",
+                )
+            )
+        return value == "true"
+
+    async def on_request(self, context: MiddlewareContext, call_next: CallNext) -> Any:  # noqa: ANN401
+        self._enabled()  # Validate the preference on every request.
+        return await call_next(context)
+
+    async def on_initialize(
+        self, context: MiddlewareContext, call_next: CallNext
+    ) -> Any:  # noqa: ANN401
+        instructions = (
+            self._documentation_instructions
+            if self._enabled()
+            else self._base_instructions
+        )
+        session = context.fastmcp_context.session
+        # FastMCP 3.4.2 sends initialization before middleware returns. Copy the
+        # session options before dispatch; never mutate the shared options.
+        session._init_options = session._init_options.model_copy(
+            update={"instructions": instructions}
+        )
+        return await call_next(context)
+
+    async def on_list_resources(
+        self, context: MiddlewareContext, call_next: CallNext
+    ) -> Any:  # noqa: ANN401
+        resources = await call_next(context)
+        if self._enabled():
+            return resources
+        return [
+            resource
+            for resource in resources
+            if str(resource.uri) != DOCUMENTATION_INDEX_URI
+        ]
+
+    async def on_read_resource(
+        self, context: MiddlewareContext, call_next: CallNext
+    ) -> Any:  # noqa: ANN401
+        if str(context.message.uri) == DOCUMENTATION_INDEX_URI and not self._enabled():
+            raise NotFoundError(f"Unknown resource: {DOCUMENTATION_INDEX_URI}")
+        return await call_next(context)
 
 
 class APIKeyMiddleware(BaseHTTPMiddleware):

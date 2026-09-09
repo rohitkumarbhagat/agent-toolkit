@@ -25,11 +25,10 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 import datacommons_mcp.tools as tools
-from datacommons_mcp.app import (
+from datacommons_mcp.app import DCApp, app
+from datacommons_mcp.middleware import (
     DOCUMENTATION_INDEX_URI,
     DOCUMENTATION_RESOURCE_NAME,
-    DCApp,
-    app,
 )
 from datacommons_mcp.version import __version__
 
@@ -95,10 +94,8 @@ def _register_skills(mcp_server: FastMCP, app_instance: DCApp) -> None:
         mcp_server.add_provider(SkillsDirectoryProvider(roots=skills_roots))
 
 
-def _register_documentation_resource(mcp_server: FastMCP, app_instance: DCApp) -> None:
-    """Registers the official documentation index when enabled."""
-    if not app_instance.settings.enable_documentation_resource:
-        return
+def _register_documentation_resource(mcp_server: FastMCP) -> None:
+    """Register the index; middleware controls client access."""
 
     @mcp_server.resource(
         DOCUMENTATION_INDEX_URI,
@@ -119,4 +116,4 @@ def _register_documentation_resource(mcp_server: FastMCP, app_instance: DCApp) -
 
 # Call provider registration on startup
 _register_skills(mcp, app)
-_register_documentation_resource(mcp, app)
+_register_documentation_resource(mcp)

@@ -66,23 +66,21 @@ def test_app_initialization_override(
     assert instructions == "Custom Server Instructions"
 
 
-def test_app_appends_documentation_hint_after_server_instructions(
+def test_app_leaves_documentation_hint_to_middleware(
     mock_settings, mock_fastmcp, tmp_path, create_test_file
 ):
-    """Test that enabled documentation guidance follows server instructions."""
+    """The shared server instructions remain unchanged when docs are enabled."""
     custom_dir = tmp_path / "instructions"
     create_test_file("instructions/server.md", "Custom Server Instructions")
     mock_settings.return_value.instructions_dir = str(custom_dir)
     mock_settings.return_value.enable_documentation_resource = True
 
-    from datacommons_mcp.app import DOCUMENTATION_ROUTING_HINT, DCApp
+    from datacommons_mcp.app import DCApp
 
     _ = DCApp()
 
     instructions = mock_fastmcp.call_args[1]["instructions"]
-    assert instructions == (
-        f"Custom Server Instructions\n\n{DOCUMENTATION_ROUTING_HINT}"
-    )
+    assert instructions == "Custom Server Instructions"
 
 
 def test_load_instruction_tool_override(mock_settings, tmp_path, create_test_file):
